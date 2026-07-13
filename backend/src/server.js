@@ -8,7 +8,15 @@ import { redisClient } from './config/redis.js';
 import apiRouter from './routes/api.js';
 import { worker } from './queue/worker.js';
 
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Load env vars from current Cwd, backend root, or root workspace
 dotenv.config();
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 const app = express();
 const PORT = process.env.PORT || 5000;

@@ -17,10 +17,10 @@ export function parseProductUrl(urlStr) {
     const url = new URL(urlStr);
     const hostname = url.hostname.toLowerCase();
 
-    if (hostname.includes('amazon.')) {
+    if (hostname.includes('amazon.') || hostname === 'amzn.in' || hostname.includes('amzn.')) {
       // Amazon ASIN is a 10-character alphanumeric code
-      // Match /dp/ASIN or /gp/product/ASIN
-      const asinMatch = url.pathname.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+      // Match /dp/ASIN or /gp/product/ASIN or short link /d/ASIN
+      const asinMatch = url.pathname.match(/\/(?:dp|gp\/product|d)\/([A-Z0-9]{10})/i);
       if (asinMatch && asinMatch[1]) {
         return {
           productId: asinMatch[1].toUpperCase(),

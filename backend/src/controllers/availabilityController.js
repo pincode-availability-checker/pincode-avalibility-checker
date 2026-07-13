@@ -5,6 +5,35 @@ import { Product } from '../models/Product.js';
 import { getScraperMetrics } from '../monitoring/alerts.js';
 
 /**
+ * Helper to resolve redirects for short links (e.g. amzn.in, amzn.to)
+ */
+async function resolveUrl(urlStr) {
+  try {
+    const response = await fetch(urlStr, {
+      method: 'HEAD',
+      redirect: 'follow',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    return response.url;
+  } catch (error) {
+    try {
+      const response = await fetch(urlStr, {
+        method: 'GET',
+        redirect: 'follow',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      return response.url;
+    } catch (e) {
+      return urlStr;
+    }
+  }
+}
+
+/**
  * Controller to handle Regional Product Availability checks.
  */
 export async function checkAvailability(req, res) {
@@ -32,10 +61,21 @@ export async function checkAvailability(req, res) {
       return res.status(400).json({ error: 'Query limit exceeded. You can check a maximum of 15 PIN codes per request.' });
     }
 
+    // Resolve short links / redirects (e.g. amzn.in/d/...)
+    let resolvedUrl = url;
+    if (url.includes('amzn.in') || url.includes('amzn.to') || url.includes('flipkart.com/dl') || url.includes('t.co') || url.includes('amzn.')) {
+      try {
+        resolvedUrl = await resolveUrl(url);
+        console.log(`Resolved short URL: ${url} -> ${resolvedUrl}`);
+      } catch (e) {
+        console.warn(`Failed to resolve redirect: ${e.message}`);
+      }
+    }
+
     // Parse URL to identify Product ID and Platform
     let parsedUrlInfo;
     try {
-      parsedUrlInfo = parseProductUrl(url);
+      parsedUrlInfo = parseProductUrl(resolvedUrl);
     } catch (e) {
       return res.status(400).json({ error: e.message });
     }
@@ -78,7 +118,7 @@ export async function checkAvailability(req, res) {
     if (cacheMisses.length > 0) {
       try {
         console.log(`Cache miss for PINs: ${cacheMisses.join(', ')}. Dispatching scraper...`);
-        freshScrapedResults = await dispatchScraperJob(url, platform, productId, cacheMisses);
+        freshScrapedResults = await dispatchScraperJob(resolvedUrl, platform, productId, cacheMisses);
       } catch (err) {
         console.error(`Scraper execution failed: ${err.message}`);
         scrapeError = err.message;
@@ -130,7 +170,7 @@ export async function checkAvailability(req, res) {
       productId,
       platform,
       productTitle,
-      url,
+      url: resolvedUrl,
       summary: {
         totalChecked: totalCount,
         available: availableCount,
