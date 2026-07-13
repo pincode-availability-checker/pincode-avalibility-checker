@@ -27,7 +27,7 @@ export default function StatusGrid({
     const interval = setInterval(() => {
       if (targetPincodes.length === 0) return;
       const currentPin = targetPincodes[currentIndex];
-      const hub = PRESET_HUBS.find(h => h.pin === currentPin);
+      const hub = PRESET_HUBS.find(h => h.pins.includes(currentPin));
       const hubName = hub ? `${hub.name} hub` : 'location';
       setLoadingText(`Checking ${hubName} (${currentPin})...`);
       currentIndex = (currentIndex + 1) % targetPincodes.length;
@@ -38,8 +38,8 @@ export default function StatusGrid({
 
   // Helper to find the hub name from a PIN code
   const getHubName = (pin: string) => {
-    const hub = PRESET_HUBS.find(h => h.pin === pin);
-    return hub ? hub.name : `PIN ${pin}`;
+    const hub = PRESET_HUBS.find(h => h.pins.includes(pin));
+    return hub ? `${hub.name} (${pin})` : `PIN ${pin}`;
   };
 
   // Helper to calculate relative time since check

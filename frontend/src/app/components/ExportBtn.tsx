@@ -10,8 +10,8 @@ interface ExportBtnProps {
 
 export default function ExportBtn({ results, productId }: ExportBtnProps) {
   const getHubName = (pin: string) => {
-    const hub = PRESET_HUBS.find(h => h.pin === pin);
-    return hub ? hub.name : 'Custom Location';
+    const hub = PRESET_HUBS.find(h => h.pins.includes(pin));
+    return hub ? `${hub.name} (${pin})` : 'Custom Location';
   };
 
   const handleExport = () => {
