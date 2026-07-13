@@ -1,17 +1,17 @@
 'use client';
 
 import React, { useState } from 'react';
-import { PackageOpen, ShieldAlert, ShoppingBag, RefreshCw } from 'lucide-react';
-import SearchBar from './components/SearchBar.tsx';
-import StatusGrid from './components/StatusGrid.tsx';
-import ExportBtn from './components/ExportBtn.tsx';
-import { fetchAvailability, ScrapedResult } from '../services/apiClient.ts';
+import { PackageSearch, ShieldAlert } from 'lucide-react';
+import SearchBar from './components/SearchBar';
+import StatusGrid from './components/StatusGrid';
+import ExportBtn from './components/ExportBtn';
+import { fetchAvailability, ScrapedResult } from '../services/apiClient';
 
 export default function Dashboard() {
   const [url, setUrl] = useState('');
   const [targetPincodes, setTargetPincodes] = useState<string[]>([]);
   const [results, setResults] = useState<ScrapedResult[]>([]);
-  
+
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshingPin, setIsRefreshingPin] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +35,6 @@ export default function Dashboard() {
       setPlatform(data.platform || '');
     } catch (err: any) {
       setError(err.message || 'Scraper failed to initialize. Please check your URL and network.');
-      // Keep track of requested PINs to render the error states correctly on card levels if appropriate
       setResults(
         pincodes.map(pin => ({
           productId: 'error',
@@ -61,8 +60,6 @@ export default function Dashboard() {
       const data = await fetchAvailability(url, [pin]);
       if (data.results && data.results.length > 0) {
         const freshResult = data.results[0];
-        
-        // Update the specific PIN result in the array
         setResults(prevResults =>
           prevResults.map(r => (r.pincode === pin ? freshResult : r))
         );
@@ -75,65 +72,67 @@ export default function Dashboard() {
   };
 
   const hasSearched = targetPincodes.length > 0;
+  const today = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 
   return (
-    <main className="min-h-screen flex flex-col justify-between py-6 px-4 md:px-8 max-w-6xl mx-auto space-y-6">
-      
-      {/* App Header */}
-      <header className="space-y-1.5 text-center md:text-left border-b border-slate-200 pb-4">
-        <div className="flex items-center justify-center md:justify-start gap-2 text-blue-600">
-          <ShoppingBag className="w-6 h-6 stroke-[2.5]" />
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 font-sans">
-            Regional Product Availability Tracker
-          </h1>
+    <main className="min-h-screen flex flex-col py-8 px-4 md:px-8 max-w-5xl mx-auto">
+
+      {/* Manifest-style masthead */}
+      <header className="mb-8">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b-2 border-ink pb-3">
+          <div className="flex items-baseline gap-2.5">
+            <PackageSearch className="w-6 h-6 text-stamp shrink-0 translate-y-0.5" strokeWidth={2.25} />
+            <h1 className="text-2xl font-bold tracking-tight">
+              PIN Check
+            </h1>
+            <span className="hidden sm:inline text-[11px] font-mono uppercase tracking-widest text-ink-soft">
+              Availability Manifest
+            </span>
+          </div>
+          <span className="text-[11px] font-mono text-ink-soft">{today}</span>
         </div>
-        <p className="text-xs text-slate-500 font-medium">
-          Indian E-Commerce regional stock & logistics hub availability check dashboard.
+        <p className="mt-2 text-sm text-ink-soft max-w-2xl">
+          Paste an Amazon.in or Flipkart product link, choose delivery hubs, and get a per-PIN availability readout.
         </p>
       </header>
 
       {/* Primary Dashboard Body */}
       <section className="flex-grow space-y-6">
-        
-        {/* Prominent Search Section */}
-        <div className="bg-white p-5 rounded-md border border-slate-200 shadow-sm space-y-4">
+
+        <div className="bg-paper-raised p-5 md:p-6 rounded-sm border border-line shadow-sm">
           <SearchBar onSearch={handleSearch} isLoading={isLoading} />
         </div>
 
-        {/* Results Metadata Header */}
         {hasSearched && !isLoading && results.length > 0 && (
-          <div className="bg-white p-4 rounded-md border border-slate-200 shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-            <div className="space-y-1">
-              <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-blue-100 text-blue-800 border border-blue-200 font-mono">
+          <div className="bg-paper-raised p-4 rounded-sm border border-line shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+            <div className="space-y-1 min-w-0">
+              <span className="inline-flex items-center px-2 py-0.5 rounded-sm text-[10px] font-bold uppercase tracking-wider bg-stamp-soft text-stamp border border-stamp/30 font-mono">
                 {platform}
               </span>
-              <h2 className="text-base font-bold text-slate-900 line-clamp-1">{productTitle}</h2>
-              <a 
-                href={url} 
-                target="_blank" 
-                rel="noopener noreferrer" 
-                className="text-xs text-blue-600 hover:text-blue-700 hover:underline break-all"
+              <h2 className="text-base font-bold text-ink line-clamp-1">{productTitle}</h2>
+              <a
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-stamp hover:underline break-all"
               >
                 View original product link &rarr;
               </a>
             </div>
-            
+
             <ExportBtn results={results} productId={results[0]?.productId || 'export'} />
           </div>
         )}
 
-        {/* Dynamic Display (Empty State / Error / Grid) */}
         {!hasSearched ? (
-          /* Empty State */
-          <div className="flex flex-col items-center justify-center py-16 px-4 bg-white border border-slate-200 rounded-md shadow-sm space-y-3">
-            <PackageOpen className="w-12 h-12 text-slate-300 stroke-[1.5]" />
-            <p className="text-sm text-slate-400 font-medium text-center">
-              Paste a product URL to check availability across regions.
+          <div className="flex flex-col items-center justify-center py-16 px-4 bg-paper-raised border border-dashed border-line rounded-sm space-y-3">
+            <PackageSearch className="w-10 h-10 text-ink-soft/50" strokeWidth={1.5} />
+            <p className="text-sm text-ink-soft font-medium text-center max-w-xs">
+              No manifest yet — paste a product URL above to check availability across regions.
             </p>
           </div>
         ) : (
-          /* Status Grid (Handles loading skeletons and interactive cards) */
-          <div className="bg-white p-5 rounded-md border border-slate-200 shadow-sm">
+          <div className="bg-paper-raised p-5 md:p-6 rounded-sm border border-line shadow-sm">
             <StatusGrid
               results={results}
               isLoading={isLoading}
@@ -146,19 +145,20 @@ export default function Dashboard() {
 
       </section>
 
-      {/* Stated Usage Policy & Footer */}
-      <footer className="space-y-4 pt-6 border-t border-slate-200 text-[11px] text-slate-400">
-        <div className="bg-amber-50/50 p-3 rounded border border-amber-200/50 flex items-start gap-2">
-          <ShieldAlert className="w-4 h-4 text-amber-600/70 shrink-0 mt-0.5" />
+      <footer className="mt-10 pt-5 border-t border-line text-[11px] text-ink-soft space-y-4">
+        <div className="bg-pending-bg p-3 rounded-sm border border-pending-line flex items-start gap-2">
+          <ShieldAlert className="w-4 h-4 text-pending shrink-0 mt-0.5" />
           <div className="space-y-1">
-            <span className="font-bold text-slate-700 uppercase tracking-wider text-[10px]">Usage Policy:</span>
+            <span className="font-bold text-ink uppercase tracking-wider text-[10px]">Usage policy</span>
             <p className="leading-relaxed">
-              This system is intended for manual regional availability validation. Under our fair-use guidelines and target platform terms, automated scraping, bulk scripts, and competitor monitoring auditing are strictly regulated. Requests are capped at 3 transactions per hour per IP. Stale caching (6h) is active to protect server footprints.
+              Intended for manual regional availability checks only. Automated scraping, bulk scripts, and
+              competitor monitoring are restricted under target-platform terms. Requests are capped at 3 per
+              hour per IP, and results are cached for 6 hours to limit load on source sites.
             </p>
           </div>
         </div>
-        <div className="text-center">
-          &copy; 2026 Regional Product Availability Tracker. Designed under Utilitarian Minimal Guidelines.
+        <div className="text-center font-mono">
+          PIN Check &middot; unofficial availability lookup, not affiliated with Amazon or Flipkart
         </div>
       </footer>
 

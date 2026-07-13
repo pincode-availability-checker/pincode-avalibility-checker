@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, MapPin, Check, Plus } from 'lucide-react';
+import { Search, MapPin, Check } from 'lucide-react';
 
 interface SearchBarProps {
   onSearch: (url: string, pincodes: string[]) => void;
@@ -28,8 +28,6 @@ export default function SearchBar({ onSearch, isLoading }: SearchBarProps) {
   const [url, setUrl] = useState('');
   const [customPins, setCustomPins] = useState('');
   const [usePresets, setUsePresets] = useState(true);
-  
-  // Default to selecting Delhi and Mumbai (6 PINs total)
   const [selectedCities, setSelectedCities] = useState<string[]>(['Delhi', 'Mumbai']);
 
   const getSelectedPinsCount = (cities: string[]) => {
@@ -56,7 +54,6 @@ export default function SearchBar({ onSearch, isLoading }: SearchBarProps) {
   };
 
   const handleSelectAll = () => {
-    // Select first few cities that fit in the 15 PIN limit (e.g. first 5 cities = 15 PINs)
     let count = 0;
     const citiesToSelect: string[] = [];
     for (const city of PRESET_HUBS) {
@@ -79,7 +76,6 @@ export default function SearchBar({ onSearch, isLoading }: SearchBarProps) {
     let pinsList: string[] = [];
 
     if (usePresets) {
-      // Flatten selected cities to their PIN codes
       pinsList = PRESET_HUBS
         .filter(h => selectedCities.includes(h.name))
         .flatMap(h => h.pins);
@@ -88,7 +84,7 @@ export default function SearchBar({ onSearch, isLoading }: SearchBarProps) {
         .split(',')
         .map(p => p.trim())
         .filter(p => /^\d{6}$/.test(p));
-        
+
       if (pinsList.length > 15) {
         alert('Query limit exceeded. You can check a maximum of 15 custom PIN codes.');
         return;
@@ -106,86 +102,89 @@ export default function SearchBar({ onSearch, isLoading }: SearchBarProps) {
   const selectedPinsCount = getSelectedPinsCount(selectedCities);
 
   return (
-    <form onSubmit={handleSubmit} className="w-full max-w-2xl mx-auto space-y-4">
+    <form onSubmit={handleSubmit} className="w-full space-y-5">
       {/* Product URL Input */}
-      <div className="relative">
-        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-          <Search className="h-5 w-5 text-slate-400" />
+      <div className="space-y-1.5">
+        <label className="block text-[10px] font-bold uppercase tracking-widest text-ink-soft font-mono">
+          Consignment / Product URL
+        </label>
+        <div className="relative">
+          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <Search className="h-4 w-4 text-ink-soft" />
+          </div>
+          <input
+            type="url"
+            required
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://www.amazon.in/dp/... or https://www.flipkart.com/..."
+            className="w-full rounded-sm border border-line focus:border-stamp bg-paper text-base pl-10 pr-4 py-3 shadow-sm transition-colors focus-visible:ring-2 focus-visible:ring-stamp/40 focus-visible:outline-none placeholder:text-ink-soft/60"
+            disabled={isLoading}
+          />
         </div>
-        <input
-          type="url"
-          required
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="Paste Amazon.in or Flipkart.com product URL..."
-          className="w-full rounded-lg border-2 border-slate-300 focus:border-blue-600 focus:ring-0 text-base md:text-lg pl-10 pr-4 py-3 shadow-sm transition-colors font-sans focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:outline-none"
-          disabled={isLoading}
-        />
       </div>
 
       {/* Selector Mode Tabs */}
-      <div className="flex border-b border-slate-200">
+      <div className="flex border-b border-line gap-1">
         <button
           type="button"
           onClick={() => setUsePresets(true)}
-          className={`flex items-center gap-2 py-2 px-4 border-b-2 font-medium text-sm transition-all focus-visible:ring-2 focus-visible:ring-blue-600 focus:outline-none ${
+          className={`flex items-center gap-2 py-2 px-3 border-b-2 font-medium text-sm transition-all focus-visible:ring-2 focus-visible:ring-stamp/40 focus:outline-none ${
             usePresets
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
+              ? 'border-stamp text-stamp'
+              : 'border-transparent text-ink-soft hover:text-ink'
           }`}
           disabled={isLoading}
         >
           <MapPin className="w-4 h-4" />
-          Check City-Wise
+          City hubs
         </button>
         <button
           type="button"
           onClick={() => setUsePresets(false)}
-          className={`flex items-center gap-2 py-2 px-4 border-b-2 font-medium text-sm transition-all focus-visible:ring-2 focus-visible:ring-blue-600 focus:outline-none ${
+          className={`flex items-center gap-2 py-2 px-3 border-b-2 font-medium text-sm transition-all focus-visible:ring-2 focus-visible:ring-stamp/40 focus:outline-none ${
             !usePresets
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
+              ? 'border-stamp text-stamp'
+              : 'border-transparent text-ink-soft hover:text-ink'
           }`}
           disabled={isLoading}
         >
           <Search className="w-4 h-4" />
-          Custom PIN Codes
+          Custom PINs
         </button>
       </div>
 
-      {/* Target PIN inputs based on selection */}
       {usePresets ? (
-        <div className="bg-white p-4 rounded-md border border-slate-200 shadow-sm space-y-3">
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-100 pb-2">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-slate-700">Select Cities (Each expands to regional PINs):</span>
-              <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded-full ${
-                selectedPinsCount > 0 ? 'bg-blue-50 text-blue-600 border border-blue-200' : 'bg-rose-50 text-rose-600 border border-rose-200'
-              }`}>
-                {selectedPinsCount} / 15 PINs selected
-              </span>
-            </div>
+        <div className="space-y-3">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+            <span className={`text-[11px] font-bold px-2 py-0.5 rounded-sm font-mono border ${
+              selectedPinsCount > 0
+                ? 'bg-available-bg text-available border-available-line'
+                : 'bg-unavailable-bg text-unavailable border-unavailable-line'
+            }`}>
+              {selectedPinsCount} / 15 PINS SELECTED
+            </span>
             <div className="flex items-center gap-2 text-xs">
               <button
                 type="button"
                 onClick={handleSelectAll}
                 disabled={isLoading}
-                className="text-blue-600 hover:text-blue-700 hover:underline font-medium focus:outline-none disabled:opacity-40"
+                className="text-stamp hover:underline font-medium focus:outline-none disabled:opacity-40"
               >
-                Auto Fill (Max 15 PINs)
+                Auto-fill (max 15)
               </button>
-              <span className="text-slate-300">|</span>
+              <span className="text-line">|</span>
               <button
                 type="button"
                 onClick={handleDeselectAll}
                 disabled={isLoading}
-                className="text-slate-500 hover:text-slate-700 hover:underline font-medium focus:outline-none disabled:opacity-40"
+                className="text-ink-soft hover:text-ink hover:underline font-medium focus:outline-none disabled:opacity-40"
               >
-                Clear All
+                Clear all
               </button>
             </div>
           </div>
-          
+
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2 max-h-48 overflow-y-auto pr-1">
             {PRESET_HUBS.map((hub) => {
               const isSelected = selectedCities.includes(hub.name);
@@ -195,16 +194,22 @@ export default function SearchBar({ onSearch, isLoading }: SearchBarProps) {
                   type="button"
                   onClick={() => handleToggleCity(hub.name)}
                   disabled={isLoading}
-                  className={`flex items-center justify-between px-2.5 py-1.5 rounded-md border text-xs font-medium transition-all focus-visible:ring-2 focus-visible:ring-blue-600 focus:outline-none ${
+                  className={`flex items-center justify-between px-2.5 py-1.5 rounded-sm border text-xs font-medium transition-all focus-visible:ring-2 focus-visible:ring-stamp/40 focus:outline-none ${
                     isSelected
-                      ? 'bg-blue-50 border-blue-400 text-blue-800 shadow-sm'
-                      : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-slate-700'
+                      ? 'bg-stamp-soft border-stamp/40 text-stamp shadow-sm'
+                      : 'bg-paper border-line text-ink-soft hover:border-ink-soft hover:text-ink'
                   }`}
                 >
-                  <span className="truncate mr-1">{hub.name}</span>
-                  <span className="font-mono text-[9px] text-slate-400 shrink-0 flex items-center gap-0.5">
-                    {isSelected ? <Check className="w-2.5 h-2.5 text-blue-600" /> : <Plus className="w-2.5 h-2.5 text-slate-400" />}
-                    {hub.pins.length} PINs
+                  <span className="truncate mr-1 flex items-center gap-1">
+                    <span className={`w-3 h-3 rounded-[2px] border shrink-0 flex items-center justify-center ${
+                      isSelected ? 'bg-stamp border-stamp' : 'border-ink-soft/50'
+                    }`}>
+                      {isSelected && <Check className="w-2.5 h-2.5 text-paper-raised" strokeWidth={3} />}
+                    </span>
+                    {hub.name}
+                  </span>
+                  <span className="font-mono text-[9px] text-ink-soft shrink-0">
+                    {hub.pins.length}
                   </span>
                 </button>
               );
@@ -212,36 +217,38 @@ export default function SearchBar({ onSearch, isLoading }: SearchBarProps) {
           </div>
         </div>
       ) : (
-        <div className="space-y-1">
-          <label className="block text-xs font-semibold text-slate-700">Custom 6-digit PIN Codes (comma-separated, max 15):</label>
+        <div className="space-y-1.5">
+          <label className="block text-[10px] font-bold uppercase tracking-widest text-ink-soft font-mono">
+            6-digit PIN codes, comma-separated (max 15)
+          </label>
           <input
             type="text"
             value={customPins}
             onChange={(e) => setCustomPins(e.target.value)}
             placeholder="e.g., 400001, 110001, 560001, 600001"
-            className="w-full rounded-md border border-slate-300 focus:border-blue-600 focus:ring-0 text-sm px-3 py-2 shadow-sm transition-colors font-mono focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:outline-none"
+            className="w-full rounded-sm border border-line focus:border-stamp bg-paper text-sm px-3 py-2.5 shadow-sm transition-colors font-mono focus-visible:ring-2 focus-visible:ring-stamp/40 focus-visible:outline-none placeholder:text-ink-soft/60"
             disabled={isLoading}
           />
         </div>
       )}
 
       {/* Submit Button */}
-      <div className="flex justify-center pt-2">
+      <div className="flex justify-center pt-1">
         <button
           type="submit"
           disabled={isLoading || (usePresets && selectedPinsCount === 0)}
-          className="w-full md:w-auto min-w-[200px] bg-blue-600 text-white rounded-md px-6 py-2.5 font-medium hover:bg-blue-700 shadow-sm focus-visible:ring-2 focus-visible:ring-blue-600 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+          className="w-full md:w-auto min-w-[220px] bg-ink text-paper-raised rounded-sm px-6 py-2.5 font-medium hover:bg-stamp shadow-sm focus-visible:ring-2 focus-visible:ring-stamp/40 focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 tracking-wide"
         >
           {isLoading ? (
             <>
-              <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
+              <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
               </svg>
-              Checking {usePresets ? `${selectedPinsCount} PINs` : 'Custom Locations'}...
+              Checking {usePresets ? `${selectedPinsCount} PINs` : 'custom locations'}…
             </>
           ) : (
-            'Check Availability'
+            'Check availability'
           )}
         </button>
       </div>
