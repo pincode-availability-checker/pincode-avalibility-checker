@@ -6,8 +6,9 @@
 import { chromium } from 'playwright';
 import pLimit from 'p-limit';
 import { getRandomUserAgent, sleep, applyStealth } from './mitigations.js';
-import { PLATFORMS } from './parsers.js';
+import { PLATFORMS, selectors } from './parsers.js';
 import { registerFailure } from '../monitoring/alerts.js';
+import { ScraperError } from './errors.js';
 
 // Concurrency limit for target-platform tabs (default 2 to protect low-RAM host environment)
 const SCRAPER_CONCURRENCY = parseInt(process.env.SCRAPER_CONCURRENCY || '2', 10);
@@ -93,7 +94,29 @@ export async function scrapeProductAvailability(url, platform, productId, pincod
         await blockResources(page);
 
         console.log(`[${productId} - ${pin}] Navigating page to product URL...`);
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        
+        if (response && response.status() === 404) {
+          throw new ScraperError('Product page not found (404). Please verify the product URL.', 'NOT_FOUND');
+        }
+
+        // Early CAPTCHA block check
+        const parser = selectors[platform];
+        const bodyText = (await page.locator('body').innerText().catch(() => '')).toLowerCase();
+        if (parser && parser.captchaMarkers && parser.captchaMarkers.some((marker) => bodyText.includes(marker))) {
+          const platformLabel = platform === PLATFORMS.AMAZON ? 'Amazon' : 'Flipkart';
+          throw new ScraperError(`${platformLabel} blocked the scraper (Robot / CAPTCHA page detected). Please try again later.`, 'BLOCKED');
+        }
+
+        // Sanity check that the actual product page rendered
+        if (parser && parser.titleSelector) {
+          try {
+            await page.locator(parser.titleSelector).first().waitFor({ state: 'visible', timeout: 10000 });
+          } catch {
+            throw new ScraperError('Product title element not found or page took too long to load', 'TITLE_NOT_FOUND');
+          }
+        }
+
         await sleep(800, 1200);
         await dismissInitialModals(page, platform);
 
@@ -103,7 +126,7 @@ export async function scrapeProductAvailability(url, platform, productId, pincod
         } else if (platform === PLATFORMS.FLIPKART) {
           result = await checkFlipkartPin(page, pin, productId);
         } else {
-          throw new Error(`Unsupported platform: ${platform}`);
+          throw new ScraperError(`Unsupported platform: ${platform}`, 'UNSUPPORTED_PLATFORM');
         }
 
         console.log(`[${productId} - ${pin}] ✓ ${result.status} | ${result.deliveryDate || 'N/A'}`);
@@ -325,11 +348,11 @@ async function parseAmazonAvailability(page) {
     console.warn(`[Amazon Debug] Empty snippet. Title: "${pageTitle}". Body snippet: "${bodySnippet}"`);
     
     if (pageTitle.toLowerCase().includes('robot') || bodySnippet.toLowerCase().includes('robot') || bodySnippet.toLowerCase().includes('captcha')) {
-      throw new Error("Amazon blocked the scraper (Robot / CAPTCHA page detected). Please try again later.");
+      throw new ScraperError("Amazon blocked the scraper (Robot / CAPTCHA page detected). Please try again later.", 'BLOCKED');
     }
     const lowerTitle = pageTitle.toLowerCase().trim();
     if (lowerTitle === 'page not found' || lowerTitle === 'amazon.in - page not found' || lowerTitle === '404 - document not found' || lowerTitle === 'amazon.com - page not found') {
-      throw new Error("Product page not found (404). Please verify the product URL.");
+      throw new ScraperError("Product page not found (404). Please verify the product URL.", 'NOT_FOUND');
     }
   }
 
@@ -377,7 +400,7 @@ async function parseAmazonAvailability(page) {
       deliveryDate = 'Standard Delivery';
     }
   } else {
-    throw new Error('Could not determine availability: page content insufficient');
+    throw new ScraperError('Could not determine availability: page content insufficient', 'CONTENT_INSUFFICIENT');
   }
 
   return { status, deliveryDate };
@@ -421,7 +444,11 @@ async function checkFlipkartPin(page, pin, productId) {
   }
 
   input = page.locator('input#pincodeInputId, input[placeholder*="Search by area"], input[placeholder*="pin code"]').first();
-  await input.waitFor({ state: 'visible', timeout: 5000 });
+  try {
+    await input.waitFor({ state: 'visible', timeout: 5000 });
+  } catch (err) {
+    throw new ScraperError(`PIN input not visible after clicking location widget: ${err.message}`, 'PIN_INPUT_TIMEOUT');
+  }
   await input.click({ clickCount: 3 });
   await input.fill(pin);
   await sleep(2500); // let suggestions load
@@ -534,7 +561,7 @@ async function parseFlipkartAvailability(page) {
       deliveryDate = 'Standard Delivery';
     }
   } else {
-    throw new Error('Flipkart: Could not determine delivery status');
+    throw new ScraperError('Could not determine availability: page content insufficient', 'CONTENT_INSUFFICIENT');
   }
 
   return { status, deliveryDate };

@@ -72,7 +72,7 @@ export async function checkAvailability(req, res) {
     try {
       parsedUrlInfo = parseProductUrl(resolvedUrl);
     } catch (e) {
-      return res.status(400).json({ error: e.message });
+      return res.status(400).json({ error: e.code || 'UNSUPPORTED_PLATFORM', message: e.message });
     }
 
     const { productId, platform } = parsedUrlInfo;
@@ -235,7 +235,7 @@ export async function streamAvailability(req, res) {
     try {
       parsedUrlInfo = parseProductUrl(resolvedUrl);
     } catch (e) {
-      sendEvent('error', { error: e.message });
+      sendEvent('error', { error: e.code || 'UNSUPPORTED_PLATFORM', message: e.message });
       return res.end();
     }
 

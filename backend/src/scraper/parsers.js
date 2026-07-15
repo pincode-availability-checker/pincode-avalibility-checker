@@ -1,13 +1,18 @@
-/**
- * Site-specific selectors and interaction rules for Amazon.in and Flipkart.com.
- * Designed to be highly modular and support selector updates easily.
- */
+import { ScraperError } from './errors.js';
 
 export const PLATFORMS = {
   AMAZON: 'amazon',
   FLIPKART: 'flipkart',
   UNKNOWN: 'unknown',
 };
+
+export function getPlatformNameFromUrl(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+}
 
 /**
  * Extracts a unique product ID and platform type from a product URL.
@@ -46,14 +51,11 @@ export function parseProductUrl(urlStr) {
       }
     }
 
-    // If we can't extract a product ID, hash the path to create a unique identifier
-    const hash = Buffer.from(url.pathname + url.search).toString('base64').substring(0, 12);
-    return {
-      productId: `UNK_${hash}`,
-      platform: PLATFORMS.UNKNOWN,
-    };
+    // If we can't extract a product ID, it's an unsupported platform
+    throw new ScraperError(`Unsupported platform: ${getPlatformNameFromUrl(urlStr)}`, 'UNSUPPORTED_PLATFORM');
   } catch (error) {
-    throw new Error(`Invalid URL structure: ${error.message}`);
+    if (error instanceof ScraperError) throw error;
+    throw new ScraperError(`Invalid URL structure: ${error.message}`, 'UNSUPPORTED_PLATFORM');
   }
 }
 
@@ -70,15 +72,28 @@ export const selectors = {
 
     // Selectors for parsing availability status
     availabilityContainer: '#availability, #ddmDeliveryMessage, #deliveryBlockMessage, #outOfStock',
+    titleSelector: '#productTitle',
     outOfStockKeywords: [
       'currently unavailable',
       'out of stock',
       'we don\'t know when or if',
       'cannot be delivered to this location',
       'not deliverable',
-      'does not deliver to'
+      'does not deliver to',
+      'unavailable',
+      'we don\'t ship this item',
+      'does not ship to',
+      'unable to deliver',
+      'delivery is not available',
+      'cannot be shipped',
+      'choose a different delivery location'
     ],
     deliveryDateContainer: '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE, #ddmDeliveryMessage, #fast-track-message, #upsell-message, #deliveryBlockMessage',
+    captchaMarkers: [
+      "sorry, we just need to make sure you're not a robot",
+      'enter the characters you see below',
+      'api-services-support@amazon.com'
+    ]
   },
 
   [PLATFORMS.FLIPKART]: {
@@ -92,6 +107,7 @@ export const selectors = {
 
     // Selectors for parsing availability status
     deliveryContainer: 'div._3X230a, div._1TP2go, div.NY1eFD, div._3wU53n, div._2NjOI7, ._1p374S', 
+    titleSelector: 'span.B_NuCI, span.VU-ZEz, h1 span',
     outOfStockKeywords: [
       'not deliverable',
       'out of stock',
@@ -100,5 +116,6 @@ export const selectors = {
       'no seller delivering'
     ],
     deliveryDateContainer: 'div._3X230a, div.NY1eFD, ._1p374S',
+    captchaMarkers: ['access denied', 'automated access', 'unusual traffic']
   }
 };

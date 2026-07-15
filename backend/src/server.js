@@ -92,6 +92,15 @@ async function startServer() {
     console.log(`Backend Express server is running on port ${PORT}`);
   });
 
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`CRITICAL ERROR: Port ${PORT} is already in use. Please terminate any process on this port or change the PORT env variable.`);
+      process.exit(1);
+    } else {
+      console.error(`Server Error: ${err.message}`);
+    }
+  });
+
   // Graceful shutdown handler
   const gracefulShutdown = async (signal) => {
     console.log(`Received ${signal}. Starting graceful shutdown...`);
