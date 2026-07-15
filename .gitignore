@@ -17,3 +17,10 @@ lerna-debug.log*
 .eslintcache
 *.log
 .DS_Store
+
+# Scraper debug files and database
+*.png
+backend/src/debug_*
+backend/src/test_*
+backend/debug-output/
+master_pincode_database_v2.csv

@@ -1,35 +1,30 @@
 import { parseProductUrl } from '../scraper/parsers.js';
-import { getCache } from '../config/redis.js';
+import { getCache, setCache } from '../config/redis.js';
 import { dispatchScraperJob } from '../queue/queue.js';
+import { scrapeProductAvailability } from '../scraper/engine.js';
 import { Product } from '../models/Product.js';
 import { getScraperMetrics } from '../monitoring/alerts.js';
+import mongoose from 'mongoose';
+
+
+import { chromium } from 'playwright';
 
 /**
  * Helper to resolve redirects for short links (e.g. amzn.in, amzn.to)
+ * Uses Playwright to follow JS-based redirects that fetch() can't handle.
  */
 async function resolveUrl(urlStr) {
+  let browser;
   try {
-    const response = await fetch(urlStr, {
-      method: 'HEAD',
-      redirect: 'follow',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
-    return response.url;
-  } catch (error) {
-    try {
-      const response = await fetch(urlStr, {
-        method: 'GET',
-        redirect: 'follow',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-      });
-      return response.url;
-    } catch (e) {
-      return urlStr;
-    }
+    browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+    const page = await browser.newPage();
+    await page.goto(urlStr, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    const finalUrl = page.url();
+    await browser.close();
+    return finalUrl;
+  } catch (e) {
+    if (browser) await browser.close().catch(() => {});
+    return urlStr;
   }
 }
 
@@ -82,34 +77,24 @@ export async function checkAvailability(req, res) {
 
     const { productId, platform } = parsedUrlInfo;
     
-    // Check MongoDB for product title first (in case it exists)
+    // Check MongoDB for product title first (only if connected)
     let productTitle = 'Product';
-    try {
-      const existingProduct = await Product.findOne({ productId });
-      if (existingProduct) {
-        productTitle = existingProduct.title;
+    if (mongoose.connection.readyState === 1) {
+      try {
+        const existingProduct = await Product.findOne({ productId });
+        if (existingProduct) {
+          productTitle = existingProduct.title;
+        }
+      } catch (e) {
+        console.warn(`Error reading product from MongoDB: ${e.message}`);
       }
-    } catch (e) {
-      console.warn(`Error reading product from MongoDB: ${e.message}`);
+    } else {
+      console.warn(`MongoDB not connected. Skipping product title lookup for ${productId}`);
     }
 
+    // Query Redis cache for each pincode (Disabled: always live)
     const cacheHits = [];
-    const cacheMisses = [];
-
-    // Query Redis cache for each pincode
-    for (const pin of pincodes) {
-      const cacheKey = `availability:${productId}:${pin}`;
-      const cachedData = await getCache(cacheKey);
-
-      if (cachedData) {
-        cacheHits.push({
-          ...cachedData,
-          source: 'cache',
-        });
-      } else {
-        cacheMisses.push(pin);
-      }
-    }
+    const cacheMisses = [...pincodes];
 
     let freshScrapedResults = [];
     let scrapeError = null;
@@ -189,6 +174,110 @@ export async function checkAvailability(req, res) {
       : globalError.message;
       
     return res.status(500).json({ error: responseError });
+  }
+}
+
+/**
+ * SSE streaming controller — sends each PIN result as it's scraped.
+ * Frontend connects via EventSource and receives cards one by one.
+ */
+export async function streamAvailability(req, res) {
+  const { url, pins } = req.query;
+
+  // --- Validate inputs ---
+  if (!url) return res.status(400).json({ error: 'Missing required query parameter: url' });
+  if (!pins) return res.status(400).json({ error: 'Missing required query parameter: pins' });
+
+  const rawPins = pins.split(',').map(p => p.trim());
+  const pincodes = rawPins.filter(p => /^\d{6}$/.test(p));
+
+  if (pincodes.length === 0)
+    return res.status(400).json({ error: 'Invalid PIN codes. Please provide 6-digit numeric values.' });
+
+  if (pincodes.length > 15)
+    return res.status(400).json({ error: 'Query limit exceeded. Maximum 15 PIN codes per request.' });
+
+  // --- Set up SSE headers ---
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+  res.flushHeaders();
+
+  // Helper to send an SSE event
+  const sendEvent = (event, data) => {
+    try {
+      if (!res.writableEnded) {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      }
+    } catch (_) {}
+  };
+
+  const done = (extraData = {}) => {
+    sendEvent('done', extraData);
+    res.end();
+  };
+
+  try {
+    // --- Resolve short URLs ---
+    let resolvedUrl = url;
+    if (url.includes('amzn.in') || url.includes('amzn.to') || url.includes('flipkart.com/dl') || url.includes('amzn.')) {
+      try {
+        resolvedUrl = await resolveUrl(url);
+        console.log(`[SSE] Resolved short URL: ${url} -> ${resolvedUrl}`);
+      } catch (e) {
+        console.warn(`[SSE] Failed to resolve redirect: ${e.message}`);
+      }
+    }
+
+    // --- Parse product ID + platform ---
+    let parsedUrlInfo;
+    try {
+      parsedUrlInfo = parseProductUrl(resolvedUrl);
+    } catch (e) {
+      sendEvent('error', { error: e.message });
+      return res.end();
+    }
+
+    const { productId, platform } = parsedUrlInfo;
+
+    // Send meta event so the frontend can show the product header immediately
+    sendEvent('meta', { productId, platform, resolvedUrl });
+
+    // --- Check Redis cache (Disabled: always live) ---
+    const cacheMisses = [...pincodes];
+
+    // --- Run scraper directly for cache misses, streaming results as they arrive ---
+    console.log(`[SSE] Cache miss for PINs: ${cacheMisses.join(', ')}. Starting direct scrape...`);
+
+    await scrapeProductAvailability(
+      resolvedUrl,
+      platform,
+      productId,
+      cacheMisses,
+      async (result) => {
+        // Normalize dates
+        const normalized = {
+          ...result,
+          scrapedAt: result.scrapedAt instanceof Date
+            ? result.scrapedAt.toISOString()
+            : new Date(result.scrapedAt).toISOString(),
+          source: 'live',
+        };
+
+        // Stream this result to the frontend immediately
+        sendEvent('result', normalized);
+
+        // Caching disabled: do not write to Redis cache
+      }
+    );
+
+    done({ productId, platform });
+
+  } catch (globalError) {
+    console.error(`[SSE] Critical error: ${globalError.message}`);
+    sendEvent('error', { error: 'Internal server error during streaming.' });
+    res.end();
   }
 }
 

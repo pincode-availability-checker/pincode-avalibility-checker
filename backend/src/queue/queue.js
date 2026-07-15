@@ -22,9 +22,23 @@ if (redisClient && redisClient.options) {
     }
   });
 
+  scraperQueue.on('error', (err) => {
+    // Suppress console spam if Redis is offline
+    if (redisConnected) {
+      console.error(`BullMQ Queue Error: ${err.message}`);
+    }
+  });
+
   // Initialize QueueEvents to listen to job updates
   scraperQueueEvents = new QueueEvents(QUEUE_NAME, {
     connection: redisClient
+  });
+
+  scraperQueueEvents.on('error', (err) => {
+    // Suppress console spam if Redis is offline
+    if (redisConnected) {
+      console.error(`BullMQ QueueEvents Error: ${err.message}`);
+    }
   });
 }
 

@@ -28,16 +28,19 @@ app.use(cors({
 
 app.use(express.json());
 
-// Express Rate Limiter: Cap queries to 3 requests per hour per IP as per PRD
+// Serve static frontend files from public folder
+app.use(express.static(path.resolve(__dirname, '../public')));
+
+// Rate limiter for availability endpoints — 60 requests per hour per IP
 const apiRateLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 3,
-  message: { error: 'Too many queries from this IP. Anonymous requests are limited to 3 per hour.' },
+  max: 60,
+  message: { error: 'Rate limit reached. Maximum 60 requests per hour per IP.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
-// Apply rate limiter specifically to availability checks
+// Apply rate limiter to availability checks only
 app.use('/api/availability', apiRateLimiter);
 
 // Register main API routes
@@ -72,9 +75,14 @@ process.on('uncaughtException', (err) => {
   // Keep the server running instead of crashing
 });
 
+import { loadPincodeDb } from './config/pincodeDb.js';
+
 // Initialize database connections and start server
 async function startServer() {
   console.log('Initializing services...');
+  
+  // Load master pincodes database CSV
+  loadPincodeDb();
   
   // Connect to MongoDB
   await connectMongo();

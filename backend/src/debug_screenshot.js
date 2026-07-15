@@ -1,5 +1,6 @@
 import { chromium } from 'playwright';
 import { getRandomUserAgent, applyStealth } from './scraper/mitigations.js';
+import { fileURLToPath } from 'url';
 
 async function takeScreenshots() {
   const browser = await chromium.launch({
@@ -19,8 +20,10 @@ async function takeScreenshots() {
   const page = await context.newPage();
   await applyStealth(page);
 
-  // Artifact directory
-  const artifactDir = 'C:/Users/HP/.gemini/antigravity/brain/2b856c82-cb55-4281-be48-6d64f7de77c5';
+  // Cross-platform absolute path resolution from ES module URL
+  const artifactDir = fileURLToPath(new URL('../debug-output', import.meta.url));
+  const fs = await import('fs');
+  if (!fs.existsSync(artifactDir)) fs.mkdirSync(artifactDir, { recursive: true });
 
   try {
     console.log('Navigating to Amazon (SanDisk Cruzer)...');

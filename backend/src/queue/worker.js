@@ -4,6 +4,7 @@ import { scrapeProductAvailability } from '../scraper/engine.js';
 import { Product } from '../models/Product.js';
 import { AvailabilityLog } from '../models/AvailabilityLog.js';
 import { registerSuccess } from '../monitoring/alerts.js';
+import mongoose from 'mongoose';
 
 const QUEUE_NAME = 'ScraperQueue';
 let worker = null;
@@ -32,6 +33,7 @@ if (redisClient && redisClient.options) {
     {
       connection: redisClient,
       concurrency: 2, // Limit concurrent browser instances to avoid CPU bottlenecks
+      lockDuration: 180000, // 3 minutes lock to prevent stalling on long scraping runs
     }
   );
 
@@ -46,6 +48,13 @@ if (redisClient && redisClient.options) {
   worker.on('failed', (job, err) => {
     console.error(`Job ${job.id} failed: ${err.message}`);
   });
+
+  worker.on('error', (err) => {
+    // Suppress console spam if Redis is offline
+    if (redisConnected) {
+      console.error(`BullMQ Worker Error: ${err.message}`);
+    }
+  });
 }
 
 /**
@@ -57,20 +66,24 @@ export async function persistResults(url, platform, productId, results) {
 
   const productTitle = results[0].productTitle || 'Unknown Product';
 
-  // 1. Save or update product info in MongoDB
-  try {
-    await Product.findOneAndUpdate(
-      { productId },
-      {
-        productId,
-        title: productTitle,
-        url,
-        platform,
-      },
-      { upsert: true, new: true }
-    );
-  } catch (dbError) {
-    console.error(`Failed to save product ${productId} metadata to MongoDB: ${dbError.message}`);
+  // 1. Save or update product info in MongoDB (only if connected)
+  if (mongoose.connection.readyState === 1) {
+    try {
+      await Product.findOneAndUpdate(
+        { productId },
+        {
+          productId,
+          title: productTitle,
+          url,
+          platform,
+        },
+        { upsert: true, new: true }
+      );
+    } catch (dbError) {
+      console.error(`Failed to save product ${productId} metadata to MongoDB: ${dbError.message}`);
+    }
+  } else {
+    console.warn(`MongoDB not connected. Skipping product metadata save for ${productId}`);
   }
 
   // 2. Iterate through results, save logs to Mongo, and cache in Redis
@@ -82,33 +95,22 @@ export async function persistResults(url, platform, productId, results) {
       registerSuccess(productId, item.pincode);
     }
 
-    // Save to Redis cache (cache status & delivery date)
-    const cacheData = {
-      productId: item.productId,
-      productTitle: item.productTitle,
-      pincode: item.pincode,
-      status: item.status,
-      deliveryDate: item.deliveryDate,
-      scrapedAt: item.scrapedAt.toISOString ? item.scrapedAt.toISOString() : new Date(item.scrapedAt).toISOString(),
-    };
+    // Caching disabled: do not write to Redis cache
 
-    // Only cache successful or definitive scrapes (Available or Unavailable)
-    if (item.status === 'Available' || item.status === 'Unavailable') {
-      await setCache(cacheKey, cacheData, 21600); // 6 hours TTL
-    }
-
-    // Save history log to MongoDB
-    try {
-      const log = new AvailabilityLog({
-        productId: item.productId,
-        pincode: item.pincode,
-        status: item.status,
-        deliveryDate: item.deliveryDate,
-        scrapedAt: item.scrapedAt,
-      });
-      await log.save();
-    } catch (dbError) {
-      console.error(`Failed to save availability log for product ${productId} pin ${item.pincode} to MongoDB: ${dbError.message}`);
+    // Save history log to MongoDB (only if connected)
+    if (mongoose.connection.readyState === 1) {
+      try {
+        const log = new AvailabilityLog({
+          productId: item.productId,
+          pincode: item.pincode,
+          status: item.status,
+          deliveryDate: item.deliveryDate,
+          scrapedAt: item.scrapedAt,
+        });
+        await log.save();
+      } catch (dbError) {
+        console.error(`Failed to save availability log for product ${productId} pin ${item.pincode} to MongoDB: ${dbError.message}`);
+      }
     }
   }
 }

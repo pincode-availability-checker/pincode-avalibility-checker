@@ -1,19 +1,23 @@
 /**
  * Core Playwright scraper engine.
- * Handles Amazon.in and Flipkart.com product availability checks
- * across multiple PIN codes in a single session.
+ * Runs pincodes checking with concurrency limits to prevent memory crashes on 512MB RAM hosts.
  */
 
 import { chromium } from 'playwright';
+import pLimit from 'p-limit';
 import { getRandomUserAgent, sleep, applyStealth } from './mitigations.js';
-import { PLATFORMS, selectors } from './parsers.js';
+import { PLATFORMS } from './parsers.js';
 import { registerFailure } from '../monitoring/alerts.js';
 
-export async function scrapeProductAvailability(url, platform, productId, pincodes) {
+// Concurrency limit for target-platform tabs (default 2 to protect low-RAM host environment)
+const SCRAPER_CONCURRENCY = parseInt(process.env.SCRAPER_CONCURRENCY || '2', 10);
+
+export async function scrapeProductAvailability(url, platform, productId, pincodes, onResult = null) {
   if (!pincodes || pincodes.length === 0) return [];
 
-  console.log(`Starting scraper session for ${platform.toUpperCase()} product ${productId}. Target PINs: ${pincodes.join(', ')}`);
+  console.log(`[PARALLEL] Starting scraper for ${platform.toUpperCase()} ${productId} | Total PINs: ${pincodes.length} (Concurrency: ${SCRAPER_CONCURRENCY})`);
 
+  // One shared browser instance
   const browser = await chromium.launch({
     headless: true,
     args: [
@@ -22,81 +26,105 @@ export async function scrapeProductAvailability(url, platform, productId, pincod
       '--disable-setuid-sandbox',
       '--disable-web-security',
       '--disable-features=IsolateOrigins,site-per-process',
-      '--disable-dev-shm-usage',
+      '--disable-dev-shm-usage', // Critical flag for low-RAM/containerized hosts to prevent /dev/shm OOM
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-sync',
+      '--disable-translate',
+      '--disable-default-apps',
+      '--mute-audio',
+      '--no-first-run',
+      '--disable-gpu',
+      '--log-level=3',
+      '--disable-logging',
     ],
   });
 
-  const context = await browser.newContext({
-    userAgent: getRandomUserAgent(),
-    viewport: { width: 1366, height: 768 },
-    locale: 'en-IN',
-    geolocation: { latitude: 28.6139, longitude: 77.2090 }, // Delhi
-    permissions: ['geolocation'],
-    extraHTTPHeaders: {
-      'Accept-Language': 'en-IN,en;q=0.9',
-    },
-  });
+  // ── Step 1: Fetch product title in one quick pass ────────────────────────
+  let productTitle = 'Unknown Product';
+  try {
+    const titleCtx = await browser.newContext({ userAgent: getRandomUserAgent(), locale: 'en-IN' });
+    const titlePage = await titleCtx.newPage();
+    await blockResources(titlePage);
+    await titlePage.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
+    if (platform === PLATFORMS.AMAZON) {
+      const el = await titlePage.$('#productTitle, #title');
+      if (el) productTitle = (await el.textContent()).trim();
+    } else if (platform === PLATFORMS.FLIPKART) {
+      const el = await titlePage.$('span.B_NuCI, h1.yhB1nd, span.VU-ZEz, h1');
+      if (el) productTitle = (await el.textContent()).trim();
+    }
+    await titleCtx.close();
+    console.log(`Product title: ${productTitle}`);
+  } catch (e) {
+    console.warn(`Could not fetch product title: ${e.message}`);
+  }
 
-  const page = await context.newPage();
-  await applyStealth(page);
-
+  // ── Step 2: Concurrency-limited parallel execution using p-limit ────────
+  const limit = pLimit(SCRAPER_CONCURRENCY);
   const results = [];
 
-  try {
-    console.log(`Navigating to target URL: ${url}`);
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await sleep(1500, 2500);
-
-    // Dismiss any initial modals/popups
-    await dismissInitialModals(page, platform);
-
-    // Extract product title
-    let productTitle = 'Unknown Product';
-    try {
-      if (platform === PLATFORMS.AMAZON) {
-        const titleEl = await page.$('#productTitle, #title');
-        if (titleEl) productTitle = (await titleEl.textContent()).trim();
-      } else if (platform === PLATFORMS.FLIPKART) {
-        const titleEl = await page.$('span.B_NuCI, h1.yhB1nd, span.VU-ZEz, h1');
-        if (titleEl) productTitle = (await titleEl.textContent()).trim();
-      }
-    } catch (e) {
-      console.warn(`Could not extract product title: ${e.message}`);
-    }
-
-    console.log(`Product title: ${productTitle}`);
-
-    for (const pin of pincodes) {
+  const tasks = pincodes.map((pin, idx) => {
+    return limit(async () => {
       const timestamp = new Date();
-      console.log(`[${productId} - ${pin}] Checking availability...`);
+      
+      // Stagger job execution to avoid simultaneous requests (concurrency burst) hitting e-commerce servers at once,
+      // which triggers anti-bot/CAPTCHA blocks. We use a tiny 250ms stagger to keep execution extremely fast.
+      if (idx > 0) {
+        const staggerTime = idx * 250 + Math.floor(Math.random() * 150);
+        await sleep(staggerTime);
+      }
 
+      console.log(`[${productId} - ${pin}] Concurrency job checking...`);
+
+      let ctx;
       try {
+        ctx = await browser.newContext({
+          userAgent: getRandomUserAgent(),
+          viewport: { width: 1366, height: 768 },
+          locale: 'en-IN',
+          geolocation: { latitude: 28.6139, longitude: 77.2090 },
+          permissions: ['geolocation'],
+          extraHTTPHeaders: { 'Accept-Language': 'en-IN,en;q=0.9' },
+        });
+
+        const page = await ctx.newPage();
+        await applyStealth(page);
+        await blockResources(page);
+
+        console.log(`[${productId} - ${pin}] Navigating page to product URL...`);
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await sleep(800, 1200);
+        await dismissInitialModals(page, platform);
+
         let result;
         if (platform === PLATFORMS.AMAZON) {
-          result = await checkAmazonPin(page, pin, productId);
+          result = await checkAmazonPin(page, pin, productId, url);
         } else if (platform === PLATFORMS.FLIPKART) {
           result = await checkFlipkartPin(page, pin, productId);
         } else {
           throw new Error(`Unsupported platform: ${platform}`);
         }
 
-        console.log(`[${productId} - ${pin}] Result: ${result.status} | Delivery: ${result.deliveryDate || 'N/A'}`);
+        console.log(`[${productId} - ${pin}] ✓ ${result.status} | ${result.deliveryDate || 'N/A'}`);
 
-        results.push({
+        const resultObj = {
           productId,
           productTitle,
           pincode: pin,
           status: result.status,
           deliveryDate: result.deliveryDate,
           scrapedAt: timestamp,
-        });
+        };
+        results.push(resultObj);
+        if (onResult) onResult(resultObj);
 
       } catch (error) {
         const errorMessage = error.message || 'Unknown scraping error';
-        console.error(`[SCRAPE FAILURE] Product: ${productId}, PIN: ${pin}, Error: ${errorMessage}`);
+        console.error(`[FAIL] ${productId} - ${pin}: ${errorMessage}`);
         registerFailure(productId, pin);
 
-        results.push({
+        const failObj = {
           productId,
           productTitle,
           pincode: pin,
@@ -104,43 +132,60 @@ export async function scrapeProductAvailability(url, platform, productId, pincod
           deliveryDate: null,
           scrapedAt: timestamp,
           error: errorMessage,
-        });
+        };
+        results.push(failObj);
+        if (onResult) onResult(failObj);
 
-        // Try to recover session by re-navigating
-        try {
-          if (errorMessage.includes('navigation') || errorMessage.includes('Target closed') || errorMessage.includes('context')) {
-            console.log('Session crash detected. Re-navigating...');
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-            await sleep(1000, 2000);
-          }
-        } catch (reloadErr) {
-          console.error(`Failed to reload: ${reloadErr.message}`);
-        }
+      } finally {
+        if (ctx) await ctx.close().catch(() => {});
       }
-    }
+    });
+  });
 
-  } catch (globalError) {
-    console.error(`CRITICAL: Global session error for ${productId}: ${globalError.message}`);
-    for (const pin of pincodes) {
-      if (!results.find(r => r.pincode === pin)) {
-        results.push({
-          productId,
-          productTitle: 'Unknown Product',
-          pincode: pin,
-          status: "Couldn't verify",
-          deliveryDate: null,
-          scrapedAt: new Date(),
-          error: `Session crash: ${globalError.message}`,
-        });
-        registerFailure(productId, pin);
-      }
-    }
-  } finally {
-    await browser.close();
-    console.log(`Scraper session closed for product ${productId}.`);
-  }
+  await Promise.allSettled(tasks);
+  await browser.close();
+  console.log(`[PARALLEL] Session closed for ${productId}. ${results.length}/${pincodes.length} results.`);
 
   return results;
+}
+
+/**
+ * Block unnecessary resources to speed up page loads and reduce RAM.
+ */
+async function blockResources(page) {
+  const BLOCKED_TYPES = new Set([
+    'image', 'media', 'font',
+    'imageset', 'texttrack', 'manifest',
+  ]);
+
+  const BLOCKED_DOMAINS = [
+    'doubleclick.net', 'googlesyndication.com', 'google-analytics.com',
+    'googletagmanager.com', 'facebook.net', 'amazon-adsystem.com',
+    'adsystem.amazon', 'fls-na.amazon', 'unagi.amazon', 'mads.amazon',
+    'scorecardresearch.com', 'pixel.quantserve.com', 'cdn.cookielaw.org',
+  ];
+
+  await page.route('**/*', (route) => {
+    const req = route.request();
+    const type = req.resourceType();
+    const reqUrl = req.url();
+
+    if (BLOCKED_TYPES.has(type)) {
+      return route.abort();
+    }
+
+    if (BLOCKED_DOMAINS.some(d => reqUrl.includes(d))) {
+      return route.abort();
+    }
+
+    // Strip upgrade header to bypass CORS block on CDN scripts
+    const headers = { ...req.headers() };
+    if (headers['upgrade-insecure-requests']) {
+      delete headers['upgrade-insecure-requests'];
+    }
+
+    return route.continue({ headers });
+  });
 }
 
 /**
@@ -149,18 +194,16 @@ export async function scrapeProductAvailability(url, platform, productId, pincod
 async function dismissInitialModals(page, platform) {
   try {
     if (platform === PLATFORMS.AMAZON) {
-      // Dismiss possible "Sign in" or cookie dialog
       const dismissBtn = page.locator('#nav-main a.nav-a, #dismiss-button, [data-action="a-popover-close"]').first();
-      if (await dismissBtn.isVisible({ timeout: 2000 })) {
+      if (await dismissBtn.isVisible({ timeout: 1000 })) {
         await dismissBtn.click({ force: true });
-        await sleep(300, 600);
+        await sleep(150, 300);
       }
     } else if (platform === PLATFORMS.FLIPKART) {
-      // Dismiss Flipkart login popup
       const closeBtn = page.locator('button._2KpZ6l._2doB4z, span._30XB9F').first();
-      if (await closeBtn.isVisible({ timeout: 2000 })) {
+      if (await closeBtn.isVisible({ timeout: 1000 })) {
         await closeBtn.click();
-        await sleep(300, 600);
+        await sleep(150, 300);
       }
     }
   } catch (_) { /* ignore */ }
@@ -168,81 +211,85 @@ async function dismissInitialModals(page, platform) {
 
 /**
  * Amazon: Change PIN code and read availability.
- * Uses a robust multi-strategy approach.
+ * Dynamic wait optimization to skip re-navigation if AJAX loads updates correctly.
  */
-async function checkAmazonPin(page, pin, productId) {
-  // ---- Strategy 1: Try the location slot widget ----
-  try {
-    const widget = page.locator('#nav-global-location-slot, #glow-ingress-block').first();
-    if (await widget.isVisible({ timeout: 3000 })) {
-      await widget.click({ force: true });
-      await sleep(800, 1500);
-    }
-  } catch (_) { /* ignore if not found */ }
+async function checkAmazonPin(page, pin, productId, url) {
+  // Early CAPTCHA block check to fail fast instead of waiting 8s for popover selector
+  const pageTitle = await page.title().catch(() => '');
+  const bodySnippet = await page.evaluate(() => document.body.innerText.substring(0, 300).toLowerCase()).catch(() => '');
+  if (pageTitle.toLowerCase().includes('robot') || pageTitle.toLowerCase().includes('captcha') || bodySnippet.includes('robot') || bodySnippet.includes('captcha')) {
+    throw new Error("Amazon blocked the scraper (Robot / CAPTCHA page detected). Please try again later.");
+  }
 
-  // Wait for the PIN input to appear
-  const pincodeInput = page.locator('input#GLUXZipUpdateInput');
+  const pincodeInput = page.locator('input#GLUXZipUpdateInput').first();
+  
+  // Guard click: only click the widget if the input is not already visible (to prevent closing it)
   try {
-    await pincodeInput.waitFor({ state: 'visible', timeout: 6000 });
+    if (!(await pincodeInput.isVisible({ timeout: 200 }))) {
+      const widget = page.locator('#nav-global-location-slot, #glow-ingress-block').first();
+      if (await widget.isVisible({ timeout: 2000 })) {
+        await widget.click({ force: true });
+        // Wait up to 3s for the popover to animate and become visible
+        await pincodeInput.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
+      }
+    }
+  } catch (_) { /* ignore */ }
+
+  // Fallback click: if it's still not visible after the first click and wait, try clicking the widget again
+  try {
+    if (!(await pincodeInput.isVisible({ timeout: 200 }))) {
+      const widget = page.locator('#nav-global-location-slot, #glow-ingress-block').first();
+      await widget.click({ force: true });
+      // Wait up to 3s for fallback click visibility
+      await pincodeInput.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
+    }
+  } catch (_) { /* ignore */ }
+
+  try {
+    // Explicit 8s timeout with fallback handling
+    await pincodeInput.waitFor({ state: 'visible', timeout: 8000 });
   } catch (e) {
     throw new Error(`PIN input not visible after clicking location widget: ${e.message}`);
   }
 
-  // Clear and type the PIN
-  await pincodeInput.click({ clickCount: 3 }); // triple-click selects all
-  await pincodeInput.fill('');
-  await sleep(200, 400);
-  await pincodeInput.type(pin, { delay: 80 });
-  await sleep(400, 800);
+  await pincodeInput.click({ clickCount: 3 });
+  await pincodeInput.fill(pin);
+  await sleep(80, 150);
 
-  // Click Apply/Submit button
   const submitBtn = page.locator('#GLUXZipUpdate input[type="submit"], input.a-button-input[aria-labelledby="GLUXZipUpdate-announce"]').first();
   try {
-    await submitBtn.waitFor({ state: 'visible', timeout: 3000 });
+    await submitBtn.waitFor({ state: 'visible', timeout: 2000 });
     await submitBtn.click({ force: true });
   } catch (_) {
-    // Try pressing Enter as fallback
     await pincodeInput.press('Enter');
   }
 
-  await sleep(800, 1500);
-
-  // Click "Done" button if it appears
+  // --- Dynamic Wait Optimization ---
+  // Attempt to wait for the popup to close and nav header location text to update to the new PIN.
+  // If it updates successfully, we skip the slow full page re-navigation.
   try {
-    const doneBtn = page.locator('button[name="glowDoneButton"], #GLUXConfirmClose').first();
-    if (await doneBtn.isVisible({ timeout: 3000 })) {
-      await doneBtn.click();
-      await sleep(500, 1000);
-    }
-  } catch (_) { /* no done button */ }
-
-  // Wait for page to update with new location
-  try {
-    await page.waitForFunction(
-      (pinCode) => {
-        const el = document.querySelector('#glow-ingress-line2') ||
-          document.querySelector('.nav-line-2') ||
-          document.querySelector('#nav-global-location-slot');
-        return el && el.textContent && el.textContent.includes(pinCode.substring(0, 3));
-      },
-      pin,
-      { timeout: 8000 }
-    );
-  } catch (_) {
-    // Don't fail here — Amazon sometimes doesn't show the PIN in widget but location IS updated
-    console.warn(`[${productId} - ${pin}] Location widget didn't reflect PIN but continuing...`);
-    await sleep(1000, 2000);
+    await pincodeInput.waitFor({ state: 'hidden', timeout: 5000 });
+    
+    // Check if header updates to contain the newly set pincode
+    await page.waitForFunction((p) => {
+      const el = document.querySelector('#glow-ingress-line2');
+      return el && el.innerText.includes(p);
+    }, pin, { timeout: 6000 });
+    
+    console.log(`[Amazon - ${pin}] Dynamic DOM update detected successfully. Skipping re-navigation!`);
+  } catch (e) {
+    console.warn(`[Amazon - ${pin}] Header did not update in 6s: ${e.message}. Falling back to full page re-navigation.`);
+    await page.goto(url, { waitUntil: 'load', timeout: 25000 }).catch(() => {});
+    await sleep(600, 1200);
   }
 
-  // Wait for availability section
+  // Wait for availability section or buybox container to attach
   try {
-    await page.waitForSelector('#availability, #ddmDeliveryMessage, #deliveryBlockMessage, #mir-layout-DELIVERY_BLOCK', {
+    await page.waitForSelector('#availability, #ddmDeliveryMessage, #deliveryBlockMessage, #mir-layout-DELIVERY_BLOCK, #outOfStock, #buybox', {
       state: 'attached',
-      timeout: 8000,
+      timeout: 8000, // Explicit 8s timeout for DOM stability
     });
-  } catch (_) {
-    await sleep(1000, 2000); // Just wait a bit more
-  }
+  } catch (_) { /* ignore */ }
 
   return await parseAmazonAvailability(page);
 }
@@ -254,7 +301,6 @@ async function parseAmazonAvailability(page) {
   let status = 'Unavailable';
   let deliveryDate = null;
 
-  // Collect all relevant text
   const allText = await page.evaluate(() => {
     const selectors = [
       '#availability',
@@ -273,39 +319,41 @@ async function parseAmazonAvailability(page) {
       .toLowerCase();
   });
 
+  if (allText.trim().length === 0) {
+    const pageTitle = await page.title().catch(() => 'Unknown Title');
+    const bodySnippet = await page.evaluate(() => document.body.innerText.substring(0, 300).replace(/\s+/g, ' ')).catch(() => '');
+    console.warn(`[Amazon Debug] Empty snippet. Title: "${pageTitle}". Body snippet: "${bodySnippet}"`);
+    
+    if (pageTitle.toLowerCase().includes('robot') || bodySnippet.toLowerCase().includes('robot') || bodySnippet.toLowerCase().includes('captcha')) {
+      throw new Error("Amazon blocked the scraper (Robot / CAPTCHA page detected). Please try again later.");
+    }
+    const lowerTitle = pageTitle.toLowerCase().trim();
+    if (lowerTitle === 'page not found' || lowerTitle === 'amazon.in - page not found' || lowerTitle === '404 - document not found' || lowerTitle === 'amazon.com - page not found') {
+      throw new Error("Product page not found (404). Please verify the product URL.");
+    }
+  }
+
   console.log(`[Amazon] Availability text snippet: "${allText.substring(0, 200)}"`);
 
   const outOfStockPhrases = [
-    'currently unavailable',
-    'out of stock',
-    'we don\'t know when or if',
-    'cannot be delivered to this location',
-    'not deliverable',
-    'does not deliver to',
-    'unavailable',
-    'we don\'t ship this item',
+    'currently unavailable', 'out of stock', 'we don\'t know when or if',
+    'cannot be delivered to this location', 'not deliverable', 'does not deliver to',
+    'unavailable', 'we don\'t ship this item', 'does not ship to', 'unable to deliver',
+    'delivery is not available', 'cannot be shipped', 'choose a different delivery location',
   ];
 
   const availablePhrases = [
-    'in stock',
-    'only',
-    'left in stock',
-    'delivery',
-    'get it by',
-    'get it as soon as',
-    'ships from',
-    'sold by',
-    'add to cart',
+    'in stock', 'only', 'left in stock', 'delivery', 'get it by',
+    'get it as soon as', 'ships from', 'sold by', 'add to cart',
   ];
 
   const isOut = outOfStockPhrases.some(k => allText.includes(k));
   const isAvailable = availablePhrases.some(k => allText.includes(k));
 
-  if (isOut && !isAvailable) {
+  if (isOut) {
     status = 'Unavailable';
   } else if (isAvailable || (!isOut && allText.length > 20)) {
     status = 'Available';
-    // Extract delivery date text
     try {
       const dateText = await page.evaluate(() => {
         const dateSelectors = [
@@ -329,7 +377,6 @@ async function parseAmazonAvailability(page) {
       deliveryDate = 'Standard Delivery';
     }
   } else {
-    // Empty or ambiguous — treat as unable to verify
     throw new Error('Could not determine availability: page content insufficient');
   }
 
@@ -340,48 +387,74 @@ async function parseAmazonAvailability(page) {
  * Flipkart: Change PIN code and read availability.
  */
 async function checkFlipkartPin(page, pin, productId) {
-  // Try to find and clear the pincode input
-  let input = page.locator('input#pincodeInputId').first();
+  // Ensure we are scrolled to bring delivery section in view and hydrate it
+  await page.evaluate(() => window.scrollBy(0, 700));
+  await sleep(1500, 2000);
 
-  if (!(await input.isVisible({ timeout: 3000 }).catch(() => false))) {
-    // Try clicking "Deliver to" or similar openers
-    const openers = page.locator('div._3X230a, div.ld-VE3, div._2afOB6, [class*="pincode"]').first();
+  let input = page.locator('input#pincodeInputId, input[placeholder*="Search by area"], input[placeholder*="pin code"]').first();
+  const isInputVisible = await input.isVisible({ timeout: 2000 }).catch(() => false);
+
+  if (!isInputVisible) {
+    console.log(`[Flipkart - ${pin}] Pincode input is not visible. Searching for openers...`);
+    
+    // Construct robust opener using Playwright's locator.or() builder
+    let opener = page.locator('a:has-text("Select delivery location")');
+    opener = opener.or(page.locator('a:has-text("Location not set")'));
+    opener = opener.or(page.locator('a:has-text("Deliver to")'));
+    opener = opener.or(page.locator('div._3X230a'));
+    opener = opener.or(page.locator('div.ld-VE3'));
+    opener = opener.or(page.locator('div._2afOB6'));
+    opener = opener.or(page.locator('[class*="pincode"]'));
+    opener = opener.or(page.locator('text=/Select delivery location/i'));
+    opener = opener.or(page.locator('text=/Location not set/i'));
+    opener = opener.or(page.locator('text=/Deliver to/i'));
+
     try {
-      if (await openers.isVisible({ timeout: 2000 })) {
-        await openers.click();
-        await sleep(500, 1000);
-      }
-    } catch (_) { /* ignore */ }
-    input = page.locator('input#pincodeInputId, input[placeholder*="Enter pincode"], input[placeholder*="Pincode"]').first();
+      const firstOpener = opener.first();
+      await firstOpener.waitFor({ state: 'visible', timeout: 5000 });
+      console.log(`[Flipkart - ${pin}] Opener found! Text: "${await firstOpener.innerText()}"`);
+      await firstOpener.click({ force: true });
+      await sleep(1500, 2000);
+    } catch (e) {
+      console.warn(`[Flipkart - ${pin}] Failed to find/click location opener: ${e.message}`);
+    }
   }
 
-  await input.scrollIntoViewIfNeeded({ timeout: 4000 });
+  input = page.locator('input#pincodeInputId, input[placeholder*="Search by area"], input[placeholder*="pin code"]').first();
+  await input.waitFor({ state: 'visible', timeout: 5000 });
   await input.click({ clickCount: 3 });
-  await input.fill('');
-  await sleep(200, 400);
-  await input.type(pin, { delay: 80 });
-  await sleep(400, 700);
+  await input.fill(pin);
+  await sleep(2500); // let suggestions load
 
-  // Click "Check" button
-  const checkBtn = page.locator('p.s1Q9rs, span._2PciBh, p._2RQLHD, span.y305Xq, div._3X230a span').first();
-  try {
-    if (await checkBtn.isVisible({ timeout: 2000 })) {
-      await checkBtn.click();
+  const suggestion = page.locator(`text=${pin}`).first();
+  const isSuggestionVisible = await suggestion.isVisible().catch(() => false);
+
+  if (isSuggestionVisible) {
+    console.log(`[Flipkart - ${pin}] Suggestion containing pin visible. Clicking suggestion...`);
+    await suggestion.click();
+    await sleep(2000); // wait for map popup
+
+    const confirmBtn = page.locator('text="Confirm"').first();
+    if (await confirmBtn.isVisible().catch(() => false)) {
+      console.log(`[Flipkart - ${pin}] Clicking map Confirm button...`);
+      await confirmBtn.click();
+      await sleep(4000); // wait for map to close and page to update
     } else {
+      console.warn(`[Flipkart - ${pin}] Confirm button not found on map popup.`);
+    }
+  } else {
+    console.log(`[Flipkart - ${pin}] Suggestion not visible. Pressing Enter to verify...`);
+    const checkBtn = page.locator('p.s1Q9rs, span._2PciBh, p._2RQLHD, span.y305Xq, div._3X230a span').first();
+    try {
+      if (await checkBtn.isVisible({ timeout: 2000 })) {
+        await checkBtn.click();
+      } else {
+        await input.press('Enter');
+      }
+    } catch (_) {
       await input.press('Enter');
     }
-  } catch (_) {
-    await input.press('Enter');
-  }
-
-  // Wait for delivery info to update
-  try {
-    await page.waitForSelector('div._3X230a, div._1TP2go, div.NY1eFD, div._3XINqE', {
-      state: 'visible',
-      timeout: 6000,
-    });
-  } catch (_) {
-    await sleep(1000, 2000);
+    await sleep(3500);
   }
 
   return await parseFlipkartAvailability(page);
@@ -395,36 +468,65 @@ async function parseFlipkartAvailability(page) {
   let deliveryDate = null;
 
   const allText = await page.evaluate(() => {
+    // 1. Search for elements containing the text "delivery details"
+    const headers = Array.from(document.querySelectorAll('*')).filter(el => 
+      el.innerText && el.innerText.trim().toLowerCase() === 'delivery details'
+    );
+    
+    if (headers.length > 0) {
+      // Find the closest wrapper container
+      let parent = headers[0].parentElement;
+      // We traverse up to 3 levels to capture the whole delivery details block (e.g. delivery date, pincode text, fulfillment)
+      for (let i = 0; i < 3; i++) {
+        if (parent && parent.tagName !== 'BODY') {
+          parent = parent.parentElement;
+        }
+      }
+      if (parent) return parent.innerText || '';
+    }
+    
+    // Fallback selectors
     const selectors = [
-      'div._3X230a',
-      'div._1TP2go',
-      'div.NY1eFD',
-      'div._2NjOI7',
-      'div._3XINqE',
-      'div[class*="delivery"]',
-      'div[class*="Delivery"]',
+      'div._3X230a', 'div._1TP2go', 'div.NY1eFD', 'div._2NjOI7',
+      'div._3XINqE', 'div[class*="delivery"]', 'div[class*="Delivery"]',
     ];
     return selectors
       .flatMap(sel => Array.from(document.querySelectorAll(sel)))
       .map(el => el.innerText || el.textContent || '')
-      .join(' ')
-      .toLowerCase();
+      .join(' ');
   });
 
-  console.log(`[Flipkart] Delivery text snippet: "${allText.substring(0, 200)}"`);
+  const allTextLower = allText.toLowerCase();
+  console.log(`[Flipkart] Scraped delivery text snippet: "${allText.replace(/\s+/g, ' ').substring(0, 200)}"`);
 
   const outPhrases = ['not deliverable', 'out of stock', 'currently unavailable', 'not available', 'no seller delivering'];
   const inPhrases = ['delivery by', 'delivered by', 'standard delivery', 'tomorrow', 'today', 'days', 'free delivery'];
 
-  const isOut = outPhrases.some(k => allText.includes(k));
-  const isIn = inPhrases.some(k => allText.includes(k));
+  const isOut = outPhrases.some(k => allTextLower.includes(k));
+  const isIn = inPhrases.some(k => allTextLower.includes(k));
 
   if (isOut) {
     status = 'Unavailable';
-  } else if (isIn) {
+  } else if (isIn || allText.length > 10) {
     status = 'Available';
     try {
       deliveryDate = await page.evaluate(() => {
+        const headers = Array.from(document.querySelectorAll('*')).filter(el => 
+          el.innerText && el.innerText.trim().toLowerCase() === 'delivery details'
+        );
+        if (headers.length > 0) {
+          let parent = headers[0].parentElement;
+          for (let i = 0; i < 3; i++) {
+            if (parent && parent.tagName !== 'BODY') parent = parent.parentElement;
+          }
+          if (parent) {
+            // Find lines containing "Delivery by", "Delivered by", "tomorrow", or "today"
+            const lines = parent.innerText.split('\n').map(l => l.trim());
+            const dateLine = lines.find(l => /(?:delivery|delivered)\s+by|tomorrow|today/i.test(l));
+            if (dateLine) return dateLine;
+          }
+        }
+        
         const el = document.querySelector('div._3X230a, div.NY1eFD, div._1TP2go');
         return el ? el.innerText.replace(/\s+/g, ' ').trim() : null;
       });

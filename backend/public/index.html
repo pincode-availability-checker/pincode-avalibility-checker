@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PIN Check — Availability Manifest</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<main class="wrap">
+
+  <!-- Masthead -->
+  <header class="masthead">
+    <div class="masthead-row">
+      <div class="masthead-title">
+        <svg class="icon icon-stamp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><path d="M8 11h6"></path></svg>
+        <h1>PIN Check</h1>
+        <span class="masthead-tag">Availability Manifest</span>
+      </div>
+      <span class="masthead-date" id="today-date"></span>
+    </div>
+    <p class="masthead-sub">Paste an Amazon.in or Flipkart product link, choose delivery hubs, and get a per-PIN availability readout.</p>
+  </header>
+
+  <section class="body-stack">
+
+    <!-- Search card -->
+    <div class="card">
+      <form id="search-form">
+        <div class="field">
+          <label class="field-label">Consignment / Product URL</label>
+          <div class="input-with-icon">
+            <svg class="icon input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <input type="url" id="product-url" required placeholder="https://www.amazon.in/dp/... or https://www.flipkart.com/..." />
+          </div>
+        </div>
+
+        <div class="tabs">
+          <button type="button" class="tab-btn active" data-mode="presets">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-5.686-7-11a7 7 0 0 1 14 0c0 5.314-7 11-7 11z"></path><circle cx="12" cy="10" r="2.5"></circle></svg>
+            City hubs
+          </button>
+          <button type="button" class="tab-btn" data-mode="city-scan">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+            Scan full city
+          </button>
+          <button type="button" class="tab-btn" data-mode="custom">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            Custom PINs
+          </button>
+        </div>
+
+        <!-- Preset city mode -->
+        <div id="presets-panel" class="panel">
+          <!-- City select searchable input (with custom dropdown) -->
+          <div class="field" style="position: relative;">
+            <label class="field-label">Delivery City / District</label>
+            <div class="input-with-icon">
+              <svg class="icon input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-5.686-7-11a7 7 0 0 1 14 0c0 5.314-7 11-7 11z"></path><circle cx="12" cy="10" r="2.5"></circle></svg>
+              <input type="text" id="city-input" placeholder="Search and select city (e.g. LUCKNOW (UTTAR PRADESH))..." autocomplete="off" />
+            </div>
+            <div id="cities-dropdown" class="dropdown-menu hidden"></div>
+            <span id="city-error" class="error-text hidden" style="color: rgb(var(--unavailable)); font-size: 11px; margin-top: 4px; display: block; font-weight: 500;">City not found — please select from suggestions</span>
+          </div>
+
+          <!-- Zone container: renders tabs/buttons for zones if available -->
+          <div id="zone-container" class="field hidden">
+            <label class="field-label">Select Area / Zone</label>
+            <div id="zone-buttons" class="tabs" style="border-bottom: none; margin-bottom: 0; flex-wrap: wrap; gap: 6px;"></div>
+          </div>
+
+          <!-- Pincode checkbox selector list -->
+          <div id="pincode-panel" class="field hidden">
+            <div class="panel-row">
+              <span id="pin-count-badge" class="badge badge-neutral">0 / 15 PINS SELECTED</span>
+              <div class="link-actions">
+                <button type="button" id="select-all-btn" class="link-btn">Select all</button>
+                <span class="sep">|</span>
+                <button type="button" id="clear-all-btn" class="link-btn muted">Clear all</button>
+              </div>
+            </div>
+
+            <!-- Pincode Search input -->
+            <div class="field" style="margin: 10px 0 12px 0;">
+              <div class="input-with-icon">
+                <svg class="icon input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <input type="text" id="pincode-search" placeholder="Search pincode or location name..." style="padding-top: 8px; padding-bottom: 8px; font-size: 13px;" />
+              </div>
+            </div>
+
+            <!-- Pincode grid container -->
+            <div id="pincode-grid" class="city-grid" style="max-height: 250px; grid-template-columns: repeat(2, 1fr);"></div>
+          </div>
+
+          <!-- Full City Scan Action -->
+          <div id="city-scan-wrapper" class="field hidden" style="margin-top: 16px; border-top: 1px dashed rgb(var(--line)); padding-top: 16px;">
+            <button type="button" id="city-scan-btn" class="btn-secondary" style="width: 100%; justify-content: center; background: rgb(var(--stamp-soft)); border-color: rgba(var(--stamp), 0.3); color: rgb(var(--stamp)); font-weight: 600; padding: 10px;">
+              Scan full city (0 pins · 0 batches)
+            </button>
+            <p style="font-size: 11px; color: rgb(var(--ink-soft)); margin-top: 6px; font-style: italic; text-align: center;">
+              *15+ pins ke liye zyada time lagega, requests background mein sequentially chalengi.
+            </p>
+          </div>
+        </div>
+
+        <!-- Custom PIN mode -->
+        <div id="custom-panel" class="panel hidden">
+          <label class="field-label">6-digit PIN codes, comma-separated (max 15)</label>
+          <input type="text" id="custom-pins" placeholder="e.g., 400001, 110001, 560001, 600001" />
+        </div>
+
+        <div class="submit-row">
+          <button type="submit" id="submit-btn" class="btn-primary">Check availability</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Product header (shown after search) -->
+    <div id="product-header" class="card product-header hidden">
+      <div class="product-info">
+        <div class="product-badges" id="product-badges"></div>
+        <h2 id="product-title" class="product-title">Fetching product info…</h2>
+        <a id="product-link" href="#" target="_blank" rel="noopener noreferrer" class="product-link">View original product link &rarr;</a>
+      </div>
+      <button type="button" id="export-btn" class="btn-secondary hidden">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"></path><path d="M7 10l5 5 5-5"></path><path d="M4 21h16"></path></svg>
+        Export CSV
+      </button>
+    </div>
+
+    <!-- Empty state -->
+    <div id="empty-state" class="card empty-state">
+      <svg class="icon icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+      <p>No manifest yet — paste a product URL above to check availability across regions.</p>
+    </div>
+
+    <!-- Results card -->
+    <div id="results-card" class="card hidden">
+      <div id="results-content"></div>
+    </div>
+
+  </section>
+
+  <footer class="footer">
+    <div class="policy-box">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><line x1="12" y1="8" x2="12" y2="13"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+      <div>
+        <span class="policy-title">Usage policy</span>
+        <p>Intended for manual regional availability checks only. Automated scraping, bulk scripts, and competitor monitoring are restricted under target-platform terms. Requests are capped at 60 per hour per IP, and results are cached for 6 hours to limit load on source sites.</p>
+      </div>
+    </div>
+    <div class="footer-attr">PIN Check &middot; unofficial availability lookup, not affiliated with Amazon or Flipkart</div>
+  </footer>
+
+</main>
+
+<script src="zones.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
